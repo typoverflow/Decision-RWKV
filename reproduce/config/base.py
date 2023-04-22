@@ -17,6 +17,7 @@ max_epoch = 1000
 step_per_epoch = 100
 eval_episode = 10
 eval_interval = 10
+relabel_interval = 1000000
 log_interval = 10
 save_interval = 50
 warmup_steps = 10000

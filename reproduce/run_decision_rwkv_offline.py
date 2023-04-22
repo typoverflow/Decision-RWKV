@@ -25,7 +25,7 @@ env, dataset = get_d4rl_dataset(args.task, normalize_obs=args.normalize_obs, nor
 obs_shape = env.observation_space.shape[0]
 action_shape = env.action_space.shape[-1]
 
-offline_buffer = D4RLTrajectoryBuffer(dataset, seq_len=args.seq_len, return_scale=args.return_scale)
+offline_buffer = D4RLTrajectoryBuffer(dataset, seq_len=args.seq_len, num_layers=args.num_layers, embed_dim=args.embed_dim, return_scale=args.return_scale, device=args.device)
 
 drwkv = DecisionRWKV(
     obs_dim=obs_shape, 
@@ -44,7 +44,7 @@ policy = DecisionRWKVPolicy(
     episode_len=args.episode_len, 
     device=args.device
 ).to(args.device)
-policy.configure_optimizers(args.lr)
+policy.configure_optimizers(args.lr, args.warmup_steps)
 
 
 # main loop
@@ -53,7 +53,9 @@ for i_epoch in trange(1, args.max_epoch+1):
     for i_step in range(args.step_per_epoch):
         batch, traj_idxs, start_idxs = offline_buffer.random_batch(args.batch_size)
         train_metrics, new_hiddens, new_cell_states = policy.update(batch, clip_grad=args.clip_grad)
-        offline_buffer.relabel(new_hiddens, new_cell_states, traj_idxs, start_idxs)
+
+    if i_epoch % args.relabel_interval == 0:
+        offline_buffer.relabel(policy)
 
     if i_epoch % args.eval_interval == 0:
         eval_metrics = eval_decision_rwkv(env, policy, args.target_returns, args.return_scale, args.eval_episode, seed=args.seed)

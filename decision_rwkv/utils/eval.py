@@ -18,6 +18,7 @@ def eval_decision_rwkv(
         episode_lengths = []
         episode_returns = []
         for _ in range(n_episode):
+            actor.reset()
             state, done = env.reset(), False
             return_to_go = target_return / return_scale
             
@@ -25,7 +26,7 @@ def eval_decision_rwkv(
             for step in range(actor.episode_len):
                 action = actor.select_action(
                     state, 
-                    return_to_go
+                    np.asarray(return_to_go)
                 )
                 next_state, reward, done, info = env.step(action)
                 state = next_state

@@ -1,4 +1,6 @@
+from typing import List
 import numpy as np
+import torch
 from torch.utils.data import Dataset, IterableDataset
 
 from offlinerllib.buffer.base import Buffer
@@ -20,10 +22,12 @@ class D4RLTrajectoryBuffer(Buffer, IterableDataset):
     def __init__(
         self, 
         dataset, 
-        embed_dim: int, 
         seq_len: int, 
+        num_layers: int, 
+        embed_dim: int, 
         discount: float=1.0, 
         return_scale: float=1.0,
+        device="cpu", 
     ) -> None:
         converted_dataset = {
             "observations": dataset["observations"].astype(np.float32), 
@@ -37,6 +41,7 @@ class D4RLTrajectoryBuffer(Buffer, IterableDataset):
         self.seq_len = seq_len
         self.discount = discount
         self.return_scale = return_scale
+        self.device = device
         traj_start = 0
         for i in range(dataset["rewards"].shape[0]):
             if dataset["ends"][i]:
@@ -44,7 +49,7 @@ class D4RLTrajectoryBuffer(Buffer, IterableDataset):
                 episode_data["returns"] = discounted_cum_sum(episode_data["rewards"], discount=discount) * self.return_scale
 
                 action_dim = episode_data["actions"].shape[-1]
-                episode_data["last_actions"] = np.concatenate([np.zeros([1, action_dim]), episode_data["actions"][:-1]], dim=0)
+                episode_data["last_actions"] = np.concatenate([np.zeros([1, action_dim]), episode_data["actions"][:-1]], axis=0)
                 
                 traj.append(episode_data)
                 traj_len.append(i+1-traj_start)
@@ -63,20 +68,21 @@ class D4RLTrajectoryBuffer(Buffer, IterableDataset):
             traj[i_traj]["masks"] = np.hstack([np.ones(this_len), np.zeros(self.max_len-this_len)])
         
         # register all entries
-        self.observations = np.asarray([t["observations"] for t in traj])
-        self.actions = np.asarray([t["actions"] for t in traj])
-        self.last_actions = np.asarray(t["actions"] for t in traj)
-        self.rewards = np.asarray([t["rewards"] for t in traj])
-        self.terminals = np.asarray([t["terminals"] for t in traj])
-        self.next_observations = np.asarray([t["next_observations"] for t in traj])
-        self.masks = np.asarray([t["masks"] for t in traj])
+        self.observations = np.asarray([t["observations"] for t in traj], dtype=np.float32)
+        self.actions = np.asarray([t["actions"] for t in traj], dtype=np.float32)
+        self.last_actions = np.asarray([t["last_actions"] for t in traj], dtype=np.float32)
+        self.returns = np.asarray([t["returns"] for t in traj], dtype=np.float32)
+        self.rewards = np.asarray([t["rewards"] for t in traj], dtype=np.float32)
+        self.terminals = np.asarray([t["terminals"] for t in traj], dtype=np.float32)
+        self.next_observations = np.asarray([t["next_observations"] for t in traj], dtype=np.float32)
+        self.masks = np.asarray([t["masks"] for t in traj], dtype=np.float32)
         self.timesteps = np.arange(self.max_len)
 
-        self.hiddens = np.zeros([self.traj_num, self.max_len, embed_dim])
-        self.cell_states = np.concatenate([
-            np.zeros([self.traj_num, self.max_len, embed_dim]), 
-            np.ones([self.traj_num, self.max_len, embed_dim]) * (-1e38)
-        ])
+        self.hiddens = np.zeros([self.traj_num, self.max_len, num_layers, embed_dim], dtype=np.float32)
+        self.cell_states = np.stack([
+            np.zeros([self.traj_num, self.max_len, num_layers, embed_dim]), 
+            np.ones([self.traj_num, self.max_len, num_layers, embed_dim]) * (-1e38)
+        ], axis=-1).reshape([self.traj_num, self.max_len, num_layers, 2*embed_dim]).astype(np.float32)
 
     def __len__(self):
         return self.size
@@ -85,6 +91,8 @@ class D4RLTrajectoryBuffer(Buffer, IterableDataset):
         return {
             "observations": self.observations[traj_idx, start_idx:start_idx+self.seq_len], 
             "actions": self.actions[traj_idx, start_idx:start_idx+self.seq_len], 
+            "last_actions": self.last_actions[traj_idx, start_idx:start_idx+self.seq_len], 
+            "returns": self.returns[traj_idx, start_idx:start_idx+self.seq_len], 
             "rewards": self.rewards[traj_idx, start_idx:start_idx+self.seq_len], 
             "terminals": self.terminals[traj_idx, start_idx:start_idx+self.seq_len], 
             "next_observations": self.next_observations[traj_idx, start_idx:start_idx+self.seq_len], 
@@ -114,11 +122,37 @@ class D4RLTrajectoryBuffer(Buffer, IterableDataset):
                     batch_data[_key] = []
                 batch_data[_key].append(_value)
         for _key, _value in batch_data.items():
-            batch_data[_key] = np.vstack(_value)
+            batch_data[_key] = np.stack(_value, axis=0)
         return batch_data, traj_idxs, np.asarray(start_idxs)
     
-    def relabel(self, hiddens, cell_states, traj_idxs, start_idxs):
-        for i, t, s in enumerate(traj_idxs, start_idxs):
-            self.hiddens[t, s:s+self.seq_len] = hiddens[i]
-            self.cell_states[t, s+self.seq_len] = cell_states[i]
-        
+    @torch.no_grad()
+    def relabel(self, policy):
+        policy.eval()
+        non_mask_idx = np.ones([self.traj_num, ], dtype=np.bool8)
+        timestep = 0
+        cur_num = self.traj_num
+        while True:
+            non_mask_idx &= self.masks[:, timestep].astype(np.bool8)
+            if not non_mask_idx.any():
+                break
+            cur_num = non_mask_idx.sum()
+            cur_last_actions = torch.from_numpy(self.last_actions[non_mask_idx, timestep:timestep+1]).to(self.device)
+            cur_states = torch.from_numpy(self.observations[non_mask_idx, timestep:timestep+1]).to(self.device)
+            cur_returns_to_go = torch.from_numpy(self.returns[non_mask_idx, timestep:timestep+1]).to(self.device)
+            cur_timesteps = (torch.ones([cur_num, 1], dtype=torch.long)*timestep).to(self.device)
+            cur_hiddens = torch.from_numpy(self.hiddens[non_mask_idx, timestep]).to(self.device)
+            cur_cell_states = torch.from_numpy(self.cell_states[non_mask_idx, timestep]).to(self.device)
+            
+            _, new_hiddens, new_cell_states = policy(
+                last_actions=cur_last_actions, 
+                states=cur_states, 
+                returns_to_go=cur_returns_to_go, 
+                timesteps=cur_timesteps, 
+                hiddens=cur_hiddens, 
+                cell_states=cur_cell_states
+            )
+            self.hiddens[non_mask_idx, timestep+1] = new_hiddens.cpu().numpy()
+            self.cell_states[non_mask_idx, timestep+1] = new_cell_states.cpu().numpy()
+
+            timestep += 1
+        policy.train()
