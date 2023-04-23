@@ -10,7 +10,7 @@ from offlinerllib.utils.d4rl import get_d4rl_dataset
 from decision_rwkv.buffer.rwkv_buffer import D4RLTrajectoryBuffer
 from decision_rwkv.module.attention.rwkv import DecisionRWKV
 from decision_rwkv.policy.model_free.DecisionRWKV import DecisionRWKVPolicy
-from decision_rwkv.utils.eval import eval_decision_rwkv
+from decision_rwkv.utils.eval import eval_decision_rwkv_rnn, eval_decision_rwkv_gpt
 
 args = parse_args()
 exp_name = "_".join([args.task, "seed"+str(args.seed)]) 
@@ -54,11 +54,14 @@ for i_epoch in trange(1, args.max_epoch+1):
         batch, traj_idxs, start_idxs = offline_buffer.random_batch(args.batch_size)
         train_metrics, new_hiddens, new_cell_states = policy.update(batch, clip_grad=args.clip_grad)
 
-    if i_epoch % args.relabel_interval == 0:
+    if args.mode == "RNN" and i_epoch % args.relabel_interval == 0:
         offline_buffer.relabel(policy)
 
     if i_epoch % args.eval_interval == 0:
-        eval_metrics = eval_decision_rwkv(env, policy, args.target_returns, args.return_scale, args.eval_episode, seed=args.seed)
+        if args.mode == "RNN":
+            eval_metrics = eval_decision_rwkv_rnn(env, policy, args.target_returns, args.return_scale, args.eval_episode, seed=args.seed)
+        else:
+            eval_metrics = eval_decision_rwkv_gpt(env, policy, args.target_returns, args.return_scale, args.eval_episode, seed=args.seed)
         logger.info(f"Episode {i_epoch}: \n{eval_metrics}")
     
     if i_epoch % args.log_interval == 0:

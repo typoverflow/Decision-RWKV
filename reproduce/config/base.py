@@ -33,5 +33,4 @@ batch_size = 64
 lr = 1e-4
 return_scale = 1000.0
 
-task = "hopper-medium-v2"
-target_returns = [1800.0, 3600.0]
+mode = "GPT" # choice from {"RNN", "GPT"}

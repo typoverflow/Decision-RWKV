@@ -52,12 +52,12 @@ class DecisionRWKVPolicy(BasePolicy):
         return action_pred, new_hidden, new_cell_state
 
     @torch.no_grad()
-    def select_action(self, states, returns_to_go):
+    def select_action_rnn(self, states, returns_to_go):
         states = torch.from_numpy(states).float().reshape(1, 1, self.state_dim).to(self.device)
         returns_to_go = torch.from_numpy(returns_to_go).float().reshape(1, 1, 1).to(self.device)
-        timesteps = torch.tensor(self.timestep).long().reshape(1, 1, 1).to(self.device)
+        timesteps = torch.tensor(self.timestep).long().reshape(1, 1).to(self.device)
         
-        action_pred, new_hidden, new_cell_state = self.forward(
+        action_pred, new_hidden, new_cell_state = self(
             last_actions=self.last_action, 
             states=states, 
             returns_to_go=returns_to_go, 
@@ -72,6 +72,27 @@ class DecisionRWKVPolicy(BasePolicy):
         self.timestep += 1
         
         return action_pred[0, 0].squeeze().cpu().numpy()
+    
+    @torch.no_grad()
+    def select_action_gpt(self, last_actions, states, returns_to_go, timesteps, hiddens=None, cell_states=None):
+        B, L, C = states.shape
+        states = torch.from_numpy(states).float().reshape(1, L, self.state_dim).to(self.device)
+        last_actions = torch.from_numpy(last_actions).float().reshape(1, L, self.action_dim).to(self.device)
+        returns_to_go = torch.from_numpy(returns_to_go).float().reshape(1, L, 1).to(self.device)
+        timesteps = torch.from_numpy(timesteps).long().reshape(1, -1).to(self.device)
+        if hiddens is not None:
+            hiddens = torch.from_numpy(hiddens).float().reshape(1, -1).to(self.device)
+        if cell_states is not None:
+            cell_states = torch.from_numpy(cell_states).float().reshape(1, -1).to(self.device)
+        actions_pred, new_hidden, new_cell_state = self(
+            last_actions=last_actions, 
+            states=states, 
+            returns_to_go=returns_to_go, 
+            timesteps=timesteps, 
+            hiddens=hiddens, 
+            cell_states=cell_states
+        )
+        return actions_pred[0, L-1].squeeze().cpu().numpy()
     
     def reset(self):
         self.hidden = None
