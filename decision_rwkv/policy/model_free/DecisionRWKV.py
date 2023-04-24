@@ -3,7 +3,6 @@ from typing import Any, Dict, Optional, Union
 
 import torch
 
-from offlinerllib.module.net.attention.dt import DecisionTransformer
 from offlinerllib.policy import BasePolicy
 from offlinerllib.utils.misc import convert_to_tensor
 from decision_rwkv.module.attention.rwkv import DecisionRWKV
@@ -36,8 +35,12 @@ class DecisionRWKVPolicy(BasePolicy):
         
         self.to(device)
         
-    def configure_optimizers(self, lr, warmup_steps):
-        self.drwkv_optim = torch.optim.AdamW(self.drwkv.parameters(), lr=lr)
+    def configure_optimizers(self, lr, weight_decay, warmup_steps):
+        decay, non_decay = self.drwkv.configure_params()
+        self.drwkv_optim = torch.optim.AdamW([
+            {"params": decay, "weight_decay": weight_decay}, 
+            {"params": non_decay, "weight_decay": 0.0}
+        ], lr=lr)
         self.drwkv_optim_scheduler = torch.optim.lr_scheduler.LambdaLR(self.drwkv_optim, lambda step: min((step+1)/warmup_steps, 1))
 
     def forward(self, last_actions, states, returns_to_go, timesteps, hiddens, cell_states):

@@ -12,6 +12,7 @@ normalize_reward = False
 embed_dim = 128
 seq_len = 20
 num_layers = 3
+weight_decay = 1e-4
 
 max_epoch = 1000
 step_per_epoch = 100

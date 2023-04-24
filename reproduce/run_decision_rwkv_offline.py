@@ -44,7 +44,7 @@ policy = DecisionRWKVPolicy(
     episode_len=args.episode_len, 
     device=args.device
 ).to(args.device)
-policy.configure_optimizers(args.lr, args.warmup_steps)
+policy.configure_optimizers(args.lr, args.weight_decay, args.warmup_steps)
 
 
 # main loop
